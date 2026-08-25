@@ -19,7 +19,6 @@ def _now() -> str:
 
 
 def _score_contact(data: dict) -> int:
-    """Transparent 0-100 lead score; AI scoring can layer on top later."""
     score = 10
     if str(data.get("company_name", "")).strip(): score += 10
     if str(data.get("website", "")).strip(): score += 12
@@ -96,6 +95,14 @@ class CRMStore:
         with self.connect() as conn:
             return [dict(r) for r in conn.execute(query, params).fetchall()]
 
+    def get_contacts(self, ids: list[str]) -> list[dict]:
+        self.init_db()
+        clean = [str(x).strip() for x in ids if str(x).strip()]
+        if not clean: return []
+        marks = ",".join(["?"] * len(clean))
+        with self.connect() as conn:
+            return [dict(r) for r in conn.execute(f"SELECT * FROM crm_contacts WHERE id IN ({marks})", clean).fetchall()]
+
     def upsert_contact(self, data: dict) -> dict:
         self.init_db()
         values = {k: str(data.get(k, "") or "").strip() for k in CRM_COLUMNS}
@@ -122,17 +129,25 @@ class CRMStore:
             conn.execute(f"INSERT INTO crm_contacts ({','.join(cols)}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {updates}", row)
             return dict(conn.execute("SELECT * FROM crm_contacts WHERE id=?", (contact_id,)).fetchone())
 
+    def update_email_verification(self, contact_id: str, status: str) -> None:
+        self.init_db()
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM crm_contacts WHERE id=?", (contact_id,)).fetchone()
+            if not row: return
+            data = dict(row); data["email_verification"] = status
+            conn.execute(
+                "UPDATE crm_contacts SET email_verification=?, lead_score=?, updated_at=? WHERE id=?",
+                (status, _score_contact(data), _now(), contact_id),
+            )
+
     def rescore(self, ids: list[str] | None = None) -> int:
         self.init_db()
         with self.connect() as conn:
             if ids:
-                marks = ",".join(["?"] * len(ids))
-                rows = conn.execute(f"SELECT * FROM crm_contacts WHERE id IN ({marks})", ids).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM crm_contacts").fetchall()
+                marks = ",".join(["?"] * len(ids)); rows = conn.execute(f"SELECT * FROM crm_contacts WHERE id IN ({marks})", ids).fetchall()
+            else: rows = conn.execute("SELECT * FROM crm_contacts").fetchall()
             for row in rows:
-                data = dict(row)
-                conn.execute("UPDATE crm_contacts SET lead_score=?, updated_at=? WHERE id=?", (_score_contact(data), _now(), data["id"]))
+                data = dict(row); conn.execute("UPDATE crm_contacts SET lead_score=?, updated_at=? WHERE id=?", (_score_contact(data), _now(), data["id"]))
             return len(rows)
 
     def pipeline_summary(self) -> dict:
@@ -145,22 +160,17 @@ class CRMStore:
         return {"total": total, "average_score": round(avg, 1), "verified_emails": valid, "stages": stages}
 
     def delete_many(self, ids: list[str]) -> int:
-        self.init_db()
-        clean = [str(x).strip() for x in ids if str(x).strip()]
+        self.init_db(); clean = [str(x).strip() for x in ids if str(x).strip()]
         if not clean: return 0
         marks = ",".join(["?"] * len(clean))
         with self.connect() as conn:
-            cur = conn.execute(f"DELETE FROM crm_contacts WHERE id IN ({marks})", clean)
-            return int(cur.rowcount or 0)
+            cur = conn.execute(f"DELETE FROM crm_contacts WHERE id IN ({marks})", clean); return int(cur.rowcount or 0)
 
     def import_csv(self, raw: bytes) -> dict:
-        text = raw.decode("utf-8-sig", errors="replace")
-        reader = csv.DictReader(io.StringIO(text))
-        imported = skipped = 0
+        text = raw.decode("utf-8-sig", errors="replace"); reader = csv.DictReader(io.StringIO(text)); imported = skipped = 0
         for row in reader:
             normalized = {k: row.get(k, "") for k in CRM_COLUMNS}
-            if not any(str(v or "").strip() for v in normalized.values()):
-                skipped += 1; continue
+            if not any(str(v or "").strip() for v in normalized.values()): skipped += 1; continue
             self.upsert_contact(normalized); imported += 1
         return {"imported": imported, "skipped": skipped}
 
@@ -174,11 +184,5 @@ class CRMStore:
 
 def csv_template() -> str:
     out = io.StringIO(); writer = csv.DictWriter(out, fieldnames=CRM_COLUMNS); writer.writeheader()
-    writer.writerow({
-        "company_name": "Example Importer Ltd", "contact_name": "Jane Smith", "job_title": "Purchasing Manager",
-        "email": "jane@example.com", "phone": "+1 555 0100", "website": "https://example.com",
-        "country": "United States", "city": "Los Angeles", "linkedin": "https://linkedin.com/in/example",
-        "source": "Trade Show", "status": "new", "priority": "high", "notes": "Interested in OEM/ODM",
-        "deal_stage": "new", "lead_score": "", "email_verification": "unknown", "last_contacted_at": "", "next_follow_up_at": "",
-    })
+    writer.writerow({"company_name":"Example Importer Ltd","contact_name":"Jane Smith","job_title":"Purchasing Manager","email":"jane@example.com","phone":"+1 555 0100","website":"https://example.com","country":"United States","city":"Los Angeles","linkedin":"https://linkedin.com/in/example","source":"Trade Show","status":"new","priority":"high","notes":"Interested in OEM/ODM","deal_stage":"new","lead_score":"","email_verification":"unknown","last_contacted_at":"","next_follow_up_at":""})
     return "\ufeff" + out.getvalue()
