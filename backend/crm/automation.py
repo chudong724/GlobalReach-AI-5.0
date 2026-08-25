@@ -49,7 +49,7 @@ def sync_hunt_leads(store: CRMStore, leads: list[dict[str, Any]], *, hunt_id: st
         if not (contact["company_name"] or contact["email"] or contact["website"]):
             skipped += 1
             continue
-        saved = store.upsert_contact(contact)
+        saved = store.upsert_discovered_contact(contact)
         store.add_activity(saved["id"], "lead_discovered", f"获客任务自动入库：{source}", metadata={"hunt_id": hunt_id})
         imported += 1
     return {"imported": imported, "skipped": skipped}
