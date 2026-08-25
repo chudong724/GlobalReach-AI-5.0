@@ -15,6 +15,19 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _sync_sent_to_crm(sequence: dict[str, Any], job: dict[str, Any], sent_at: str) -> None:
+    try:
+        from crm.email_bridge import record_email_sent
+        record_email_sent(
+            str(sequence.get("lead_email", "") or ""),
+            subject=str(job.get("subject", "") or ""),
+            sent_at=sent_at,
+            step_number=int(job.get("step_number", 1) or 1),
+        )
+    except Exception:
+        pass
+
+
 def _refresh_hunt_email_summary(store: EmailStore, hunt_id: str, campaign_id: str) -> None:
     hunt = load_hunt(hunt_id)
     if not hunt:
@@ -117,6 +130,7 @@ async def run_scheduler_once(
                 last_sent_at=current,
                 next_scheduled_at=next_scheduled,
             )
+            _sync_sent_to_crm(sequence, job, current)
             sent += 1
         else:
             store.mark_message_failed(
