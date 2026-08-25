@@ -93,6 +93,13 @@ class CRMStore:
             row = conn.execute("SELECT * FROM crm_contacts WHERE id=?", (contact_id,)).fetchone()
             return dict(row) if row else None
 
+    def find_contact_by_email(self, email: str) -> dict | None:
+        self.init_db(); value = str(email or "").strip().lower()
+        if not value: return None
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM crm_contacts WHERE lower(email)=? LIMIT 1", (value,)).fetchone()
+            return dict(row) if row else None
+
     def get_contacts(self, ids: list[str]) -> list[dict]:
         self.init_db(); clean = [str(x).strip() for x in ids if str(x).strip()]
         if not clean: return []
@@ -192,6 +199,27 @@ class CRMStore:
         with self.connect() as conn:
             stages={r["deal_stage"]:int(r["n"]) for r in conn.execute("SELECT deal_stage, COUNT(*) n FROM crm_contacts GROUP BY deal_stage")}; total=int(conn.execute("SELECT COUNT(*) FROM crm_contacts").fetchone()[0]); avg=float(conn.execute("SELECT COALESCE(AVG(lead_score),0) FROM crm_contacts").fetchone()[0]); valid=int(conn.execute("SELECT COUNT(*) FROM crm_contacts WHERE email_verification='valid'").fetchone()[0]); due=int(conn.execute("SELECT COUNT(*) FROM crm_contacts WHERE next_follow_up_at<>'' AND next_follow_up_at<=? AND deal_stage NOT IN ('won','lost')",(_now(),)).fetchone()[0])
         return {"total":total,"average_score":round(avg,1),"verified_emails":valid,"due_follow_ups":due,"stages":stages}
+
+    def sales_operations_summary(self) -> dict:
+        self.init_db(); now = _now()
+        with self.connect() as conn:
+            stages = {r["deal_stage"]: int(r["n"]) for r in conn.execute("SELECT deal_stage, COUNT(*) n FROM crm_contacts GROUP BY deal_stage")}
+            total = int(conn.execute("SELECT COUNT(*) FROM crm_contacts").fetchone()[0])
+            due = int(conn.execute("SELECT COUNT(*) FROM crm_contacts WHERE next_follow_up_at<>'' AND next_follow_up_at<=? AND deal_stage NOT IN ('won','lost')", (now,)).fetchone()[0])
+            contacted = int(conn.execute("SELECT COUNT(*) FROM crm_contacts WHERE deal_stage IN ('contacted','replied','negotiating','won')").fetchone()[0])
+            replied = int(conn.execute("SELECT COUNT(*) FROM crm_contacts WHERE deal_stage IN ('replied','negotiating','won')").fetchone()[0])
+            won = int(conn.execute("SELECT COUNT(*) FROM crm_contacts WHERE deal_stage='won'").fetchone()[0])
+        return {
+            "total": total,
+            "due_follow_ups": due,
+            "contacted": contacted,
+            "replied": replied,
+            "won": won,
+            "contact_rate": round(contacted / total * 100, 1) if total else 0.0,
+            "reply_rate": round(replied / contacted * 100, 1) if contacted else 0.0,
+            "win_rate": round(won / replied * 100, 1) if replied else 0.0,
+            "stages": stages,
+        }
 
     def delete_many(self, ids: list[str]) -> int:
         self.init_db(); clean=[str(x).strip() for x in ids if str(x).strip()]
