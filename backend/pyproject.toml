@@ -1,6 +1,6 @@
 [project]
 name = "wenmei-global-ai-customer-system"
-version = "1.0.0"
+version = "1.2.0"
 description = "文美全球AI获客系统 - AI-powered B2B lead generation, CRM and outreach automation"
 requires-python = ">=3.11"
 
