@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from api.security import require_api_access
 from crm.store import CRMStore, csv_template
+from tools.email_verifier import EmailVerifierTool
 
 router = APIRouter(prefix="/api/v1/crm", tags=["CRM"], dependencies=[Depends(require_api_access)])
 _DB_PATH = Path(__file__).resolve().parent.parent / "data" / "crm.db"
@@ -62,6 +63,22 @@ def delete_many(payload: IdsPayload) -> dict[str, int]:
 @router.post("/contacts/rescore")
 def rescore(payload: IdsPayload) -> dict[str, int]:
     return {"rescored": store.rescore(payload.ids or None)}
+
+
+@router.post("/contacts/verify-email")
+async def verify_email(payload: IdsPayload) -> dict[str, Any]:
+    contacts = store.get_contacts(payload.ids)
+    targets = [(c["id"], str(c.get("email") or "").strip()) for c in contacts if str(c.get("email") or "").strip()]
+    verifier = EmailVerifierTool()
+    results = await verifier.verify_batch([email for _, email in targets]) if targets else []
+    verified = 0
+    details = []
+    for (contact_id, email), result in zip(targets, results):
+        status = "valid" if result.get("is_deliverable") else "invalid"
+        store.update_email_verification(contact_id, status)
+        verified += 1
+        details.append({"id": contact_id, "email": email, "status": status, "mx_records": result.get("mx_records", [])})
+    return {"verified": verified, "items": details}
 
 
 @router.get("/pipeline")
