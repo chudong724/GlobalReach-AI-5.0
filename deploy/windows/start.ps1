@@ -13,10 +13,10 @@ if (-not (Test-Path (Join-Path $Backend ".env"))) {
     throw "backend/.env not found. Run setup.ps1 and configure API keys first."
 }
 
-Write-Host "Starting AI Find Customer..." -ForegroundColor Cyan
+Write-Host "Starting 文美全球AI获客系统..." -ForegroundColor Cyan
 
 $backendArgs = @(
-    "-m", "uvicorn", "api.app:app",
+    "-m", "uvicorn", "branded_app:app",
     "--host", "127.0.0.1",
     "--port", "8000"
 )
@@ -37,4 +37,4 @@ Start-Process powershell -ArgumentList @(
 
 Write-Host "Backend: http://127.0.0.1:8000" -ForegroundColor Green
 Write-Host "Swagger: http://127.0.0.1:8000/docs" -ForegroundColor Green
-Write-Host "Frontend: use the Vite URL printed in the frontend window (normally http://localhost:3000 or 5173)." -ForegroundColor Green
+Write-Host "Frontend: http://localhost:3000" -ForegroundColor Green

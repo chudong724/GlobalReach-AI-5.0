@@ -1,5 +1,5 @@
 import { Link, Outlet } from "@tanstack/react-router";
-import { Crosshair, LayoutDashboard, Plus, Settings } from "lucide-react";
+import { Globe2, LayoutDashboard, Plus, Settings } from "lucide-react";
 
 export function RootLayout() {
   return (
@@ -7,8 +7,8 @@ export function RootLayout() {
       <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container mx-auto flex h-14 items-center px-4">
           <Link to="/" className="mr-8 flex items-center gap-2 text-lg font-bold">
-            <Crosshair className="h-5 w-5 text-primary" />
-            <span>AI Hunter</span>
+            <Globe2 className="h-5 w-5 text-primary" />
+            <span>文美全球AI获客系统</span>
           </Link>
           <nav className="flex items-center gap-4 text-sm">
             <Link
