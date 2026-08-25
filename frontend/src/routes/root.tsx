@@ -1,5 +1,5 @@
 import { Link, Outlet } from "@tanstack/react-router";
-import { Globe2, LayoutDashboard, Plus, Settings, Users } from "lucide-react";
+import { BrainCircuit, Globe2, LayoutDashboard, Plus, Settings, Users } from "lucide-react";
 
 export function RootLayout() {
   return (
@@ -11,42 +11,17 @@ export function RootLayout() {
             <span>文美全球AI获客系统</span>
           </Link>
           <nav className="flex items-center gap-4 text-sm">
-            <Link
-              to="/"
-              className="flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground"
-            >
-              <LayoutDashboard className="h-4 w-4" />
-              任务看板
-            </Link>
-            <Link
-              to="/hunts/new"
-              className="flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground"
-            >
-              <Plus className="h-4 w-4" />
-              新建任务
-            </Link>
-            <Link
-              to="/crm"
-              className="flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground"
-            >
-              <Users className="h-4 w-4" />
-              客户 CRM
-            </Link>
+            <Link to="/" className="flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground"><LayoutDashboard className="h-4 w-4" />任务看板</Link>
+            <Link to="/hunts/new" className="flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground"><Plus className="h-4 w-4" />新建任务</Link>
+            <Link to="/crm" className="flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground"><Users className="h-4 w-4" />客户 CRM</Link>
+            <Link to="/deepseek" className="flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground"><BrainCircuit className="h-4 w-4" />DeepSeek</Link>
           </nav>
           <div className="ml-auto">
-            <Link
-              to="/settings"
-              className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground"
-            >
-              <Settings className="h-4 w-4" />
-              系统设置
-            </Link>
+            <Link to="/settings" className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground"><Settings className="h-4 w-4" />系统设置</Link>
           </div>
         </div>
       </header>
-      <main className="container mx-auto px-4 py-8">
-        <Outlet />
-      </main>
+      <main className="container mx-auto px-4 py-8"><Outlet /></main>
     </div>
   );
 }
