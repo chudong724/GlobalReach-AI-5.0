@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -20,14 +21,9 @@ def _now() -> str:
 
 def _score_contact(data: dict) -> int:
     score = 10
-    if str(data.get("company_name", "")).strip(): score += 10
-    if str(data.get("website", "")).strip(): score += 12
-    if str(data.get("email", "")).strip(): score += 18
-    if str(data.get("phone", "")).strip(): score += 8
-    if str(data.get("linkedin", "")).strip(): score += 8
-    if str(data.get("contact_name", "")).strip(): score += 8
-    if str(data.get("job_title", "")).strip(): score += 8
-    if str(data.get("country", "")).strip(): score += 5
+    weights = {"company_name":10,"website":12,"email":18,"phone":8,"linkedin":8,"contact_name":8,"job_title":8,"country":5}
+    for key, points in weights.items():
+        if str(data.get(key, "")).strip(): score += points
     priority = str(data.get("priority", "normal")).lower()
     if priority == "high": score += 8
     elif priority == "low": score -= 3
@@ -64,70 +60,114 @@ class CRMStore:
             """)
             existing = {r[1] for r in conn.execute("PRAGMA table_info(crm_contacts)").fetchall()}
             migrations = {
-                "deal_stage": "TEXT NOT NULL DEFAULT 'new'",
-                "lead_score": "INTEGER NOT NULL DEFAULT 0",
-                "email_verification": "TEXT NOT NULL DEFAULT 'unknown'",
-                "last_contacted_at": "TEXT NOT NULL DEFAULT ''",
-                "next_follow_up_at": "TEXT NOT NULL DEFAULT ''",
+                "deal_stage":"TEXT NOT NULL DEFAULT 'new'", "lead_score":"INTEGER NOT NULL DEFAULT 0",
+                "email_verification":"TEXT NOT NULL DEFAULT 'unknown'", "last_contacted_at":"TEXT NOT NULL DEFAULT ''",
+                "next_follow_up_at":"TEXT NOT NULL DEFAULT ''",
             }
             for name, ddl in migrations.items():
-                if name not in existing:
-                    conn.execute(f"ALTER TABLE crm_contacts ADD COLUMN {name} {ddl}")
+                if name not in existing: conn.execute(f"ALTER TABLE crm_contacts ADD COLUMN {name} {ddl}")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS crm_activities (
+                    id TEXT PRIMARY KEY, contact_id TEXT NOT NULL, activity_type TEXT NOT NULL,
+                    content TEXT NOT NULL DEFAULT '', metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+                )
+            """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_email ON crm_contacts(email)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_company ON crm_contacts(company_name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_stage ON crm_contacts(deal_stage)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_score ON crm_contacts(lead_score)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_activity_contact ON crm_activities(contact_id, created_at)")
 
     def list_contacts(self, search: str = "", limit: int = 1000, stage: str = "") -> list[dict]:
-        self.init_db()
-        where, params = [], []
+        self.init_db(); where, params = [], []
         if search.strip():
-            q = f"%{search.strip()}%"
-            where.append("(company_name LIKE ? OR contact_name LIKE ? OR email LIKE ? OR website LIKE ? OR country LIKE ?)")
-            params.extend([q, q, q, q, q])
-        if stage.strip():
-            where.append("deal_stage=?")
-            params.append(stage.strip())
-        query = "SELECT * FROM crm_contacts"
-        if where: query += " WHERE " + " AND ".join(where)
-        query += " ORDER BY lead_score DESC, updated_at DESC LIMIT ?"
+            q = f"%{search.strip()}%"; where.append("(company_name LIKE ? OR contact_name LIKE ? OR email LIKE ? OR website LIKE ? OR country LIKE ?)"); params.extend([q,q,q,q,q])
+        if stage.strip(): where.append("deal_stage=?"); params.append(stage.strip())
+        query = "SELECT * FROM crm_contacts" + ((" WHERE " + " AND ".join(where)) if where else "") + " ORDER BY lead_score DESC, updated_at DESC LIMIT ?"
         params.append(max(1, min(limit, 5000)))
+        with self.connect() as conn: return [dict(r) for r in conn.execute(query, params).fetchall()]
+
+    def get_contact(self, contact_id: str) -> dict | None:
+        self.init_db()
         with self.connect() as conn:
-            return [dict(r) for r in conn.execute(query, params).fetchall()]
+            row = conn.execute("SELECT * FROM crm_contacts WHERE id=?", (contact_id,)).fetchone()
+            return dict(row) if row else None
 
     def get_contacts(self, ids: list[str]) -> list[dict]:
-        self.init_db()
-        clean = [str(x).strip() for x in ids if str(x).strip()]
+        self.init_db(); clean = [str(x).strip() for x in ids if str(x).strip()]
         if not clean: return []
         marks = ",".join(["?"] * len(clean))
-        with self.connect() as conn:
-            return [dict(r) for r in conn.execute(f"SELECT * FROM crm_contacts WHERE id IN ({marks})", clean).fetchall()]
+        with self.connect() as conn: return [dict(r) for r in conn.execute(f"SELECT * FROM crm_contacts WHERE id IN ({marks})", clean).fetchall()]
+
+    def _find_existing(self, conn, data: dict):
+        email = str(data.get("email") or "").strip(); website = str(data.get("website") or "").strip().rstrip("/").lower()
+        if email:
+            row = conn.execute("SELECT * FROM crm_contacts WHERE lower(email)=lower(?) LIMIT 1", (email,)).fetchone()
+            if row: return row
+        if website:
+            row = conn.execute("SELECT * FROM crm_contacts WHERE lower(rtrim(website,'/'))=? LIMIT 1", (website,)).fetchone()
+            if row: return row
+        return None
 
     def upsert_contact(self, data: dict) -> dict:
-        self.init_db()
-        values = {k: str(data.get(k, "") or "").strip() for k in CRM_COLUMNS}
-        values["status"] = values["status"] or "new"
-        values["priority"] = values["priority"] or "normal"
-        values["deal_stage"] = values["deal_stage"] or "new"
-        values["email_verification"] = values["email_verification"] or "unknown"
-        supplied_score = str(data.get("lead_score", "") or "").strip()
-        values["lead_score"] = supplied_score if supplied_score.isdigit() else str(_score_contact(values))
-        contact_id = str(data.get("id") or uuid.uuid4())
-        now = _now()
+        self.init_db(); values = {k: str(data.get(k, "") or "").strip() for k in CRM_COLUMNS}
+        values["status"] = values["status"] or "new"; values["priority"] = values["priority"] or "normal"; values["deal_stage"] = values["deal_stage"] or "new"; values["email_verification"] = values["email_verification"] or "unknown"
+        supplied_score = str(data.get("lead_score", "") or "").strip(); values["lead_score"] = supplied_score if supplied_score.isdigit() else str(_score_contact(values))
+        contact_id = str(data.get("id") or uuid.uuid4()); now = _now()
         with self.connect() as conn:
-            existing = None
-            if values["email"]:
-                existing = conn.execute("SELECT id, created_at FROM crm_contacts WHERE lower(email)=lower(?) LIMIT 1", (values["email"],)).fetchone()
-            if existing:
-                contact_id, created_at = existing["id"], existing["created_at"]
-            else:
-                created_at = now
-            cols = ["id"] + CRM_COLUMNS + ["created_at", "updated_at"]
-            row = [contact_id] + [values[k] for k in CRM_COLUMNS] + [created_at, now]
-            placeholders = ",".join(["?"] * len(cols))
-            updates = ",".join([f"{c}=excluded.{c}" for c in CRM_COLUMNS + ["updated_at"]])
+            existing = self._find_existing(conn, values)
+            created_at = existing["created_at"] if existing else now
+            if existing: contact_id = existing["id"]
+            cols = ["id"] + CRM_COLUMNS + ["created_at", "updated_at"]; row = [contact_id] + [values[k] for k in CRM_COLUMNS] + [created_at, now]
+            placeholders = ",".join(["?"] * len(cols)); updates = ",".join([f"{c}=excluded.{c}" for c in CRM_COLUMNS + ["updated_at"]])
             conn.execute(f"INSERT INTO crm_contacts ({','.join(cols)}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {updates}", row)
             return dict(conn.execute("SELECT * FROM crm_contacts WHERE id=?", (contact_id,)).fetchone())
+
+    def upsert_discovered_contact(self, data: dict) -> dict:
+        self.init_db()
+        with self.connect() as conn:
+            existing = self._find_existing(conn, data)
+        if not existing: return self.upsert_contact(data)
+        merged = dict(existing)
+        for key in ["company_name","contact_name","job_title","email","phone","website","country","city","linkedin","notes"]:
+            incoming = str(data.get(key) or "").strip()
+            if incoming and not str(merged.get(key) or "").strip(): merged[key] = incoming
+        merged["source"] = str(data.get("source") or merged.get("source") or "AI Hunt")
+        if str(data.get("priority") or "") == "high": merged["priority"] = "high"
+        merged["lead_score"] = ""
+        return self.upsert_contact(merged)
+
+    def add_activity(self, contact_id: str, activity_type: str, content: str = "", metadata: dict | None = None) -> dict:
+        self.init_db(); item = {"id":str(uuid.uuid4()),"contact_id":contact_id,"activity_type":activity_type,"content":content,"metadata_json":json.dumps(metadata or {}, ensure_ascii=False, default=str),"created_at":_now()}
+        with self.connect() as conn:
+            conn.execute("INSERT INTO crm_activities(id,contact_id,activity_type,content,metadata_json,created_at) VALUES(?,?,?,?,?,?)", tuple(item.values()))
+        item["metadata"] = metadata or {}; return item
+
+    def list_activities(self, contact_id: str, limit: int = 200) -> list[dict]:
+        self.init_db()
+        with self.connect() as conn: rows = conn.execute("SELECT * FROM crm_activities WHERE contact_id=? ORDER BY created_at DESC LIMIT ?", (contact_id, max(1,min(limit,1000)))).fetchall()
+        items=[]
+        for row in rows:
+            item=dict(row)
+            try: item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+            except Exception: item["metadata"] = {}; item.pop("metadata_json", None)
+            items.append(item)
+        return items
+
+    def update_sales_state(self, contact_id: str, *, deal_stage: str | None = None, next_follow_up_at: str | None = None, mark_contacted: bool = False) -> dict | None:
+        self.init_db(); fields=[]; params=[]
+        if deal_stage is not None: fields.append("deal_stage=?"); params.append(deal_stage)
+        if next_follow_up_at is not None: fields.append("next_follow_up_at=?"); params.append(next_follow_up_at)
+        if mark_contacted: fields.append("last_contacted_at=?"); params.append(_now())
+        if not fields: return self.get_contact(contact_id)
+        fields.append("updated_at=?"); params.append(_now()); params.append(contact_id)
+        with self.connect() as conn: conn.execute(f"UPDATE crm_contacts SET {','.join(fields)} WHERE id=?", params)
+        return self.get_contact(contact_id)
+
+    def due_follow_ups(self, limit: int = 100) -> list[dict]:
+        self.init_db(); now=_now()
+        with self.connect() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM crm_contacts WHERE next_follow_up_at<>'' AND next_follow_up_at<=? AND deal_stage NOT IN ('won','lost') ORDER BY next_follow_up_at ASC LIMIT ?", (now,max(1,min(limit,500)))).fetchall()]
 
     def update_email_verification(self, contact_id: str, status: str) -> None:
         self.init_db()
@@ -135,54 +175,44 @@ class CRMStore:
             row = conn.execute("SELECT * FROM crm_contacts WHERE id=?", (contact_id,)).fetchone()
             if not row: return
             data = dict(row); data["email_verification"] = status
-            conn.execute(
-                "UPDATE crm_contacts SET email_verification=?, lead_score=?, updated_at=? WHERE id=?",
-                (status, _score_contact(data), _now(), contact_id),
-            )
+            conn.execute("UPDATE crm_contacts SET email_verification=?, lead_score=?, updated_at=? WHERE id=?", (status,_score_contact(data),_now(),contact_id))
 
     def rescore(self, ids: list[str] | None = None) -> int:
         self.init_db()
         with self.connect() as conn:
             if ids:
-                marks = ",".join(["?"] * len(ids)); rows = conn.execute(f"SELECT * FROM crm_contacts WHERE id IN ({marks})", ids).fetchall()
-            else: rows = conn.execute("SELECT * FROM crm_contacts").fetchall()
+                marks=",".join(["?"]*len(ids)); rows=conn.execute(f"SELECT * FROM crm_contacts WHERE id IN ({marks})",ids).fetchall()
+            else: rows=conn.execute("SELECT * FROM crm_contacts").fetchall()
             for row in rows:
-                data = dict(row); conn.execute("UPDATE crm_contacts SET lead_score=?, updated_at=? WHERE id=?", (_score_contact(data), _now(), data["id"]))
+                data=dict(row); conn.execute("UPDATE crm_contacts SET lead_score=?, updated_at=? WHERE id=?",(_score_contact(data),_now(),data["id"]))
             return len(rows)
 
     def pipeline_summary(self) -> dict:
         self.init_db()
         with self.connect() as conn:
-            stages = {r["deal_stage"]: int(r["n"]) for r in conn.execute("SELECT deal_stage, COUNT(*) n FROM crm_contacts GROUP BY deal_stage")}
-            total = int(conn.execute("SELECT COUNT(*) FROM crm_contacts").fetchone()[0])
-            avg = float(conn.execute("SELECT COALESCE(AVG(lead_score),0) FROM crm_contacts").fetchone()[0])
-            valid = int(conn.execute("SELECT COUNT(*) FROM crm_contacts WHERE email_verification='valid'").fetchone()[0])
-        return {"total": total, "average_score": round(avg, 1), "verified_emails": valid, "stages": stages}
+            stages={r["deal_stage"]:int(r["n"]) for r in conn.execute("SELECT deal_stage, COUNT(*) n FROM crm_contacts GROUP BY deal_stage")}; total=int(conn.execute("SELECT COUNT(*) FROM crm_contacts").fetchone()[0]); avg=float(conn.execute("SELECT COALESCE(AVG(lead_score),0) FROM crm_contacts").fetchone()[0]); valid=int(conn.execute("SELECT COUNT(*) FROM crm_contacts WHERE email_verification='valid'").fetchone()[0]); due=int(conn.execute("SELECT COUNT(*) FROM crm_contacts WHERE next_follow_up_at<>'' AND next_follow_up_at<=? AND deal_stage NOT IN ('won','lost')",(_now(),)).fetchone()[0])
+        return {"total":total,"average_score":round(avg,1),"verified_emails":valid,"due_follow_ups":due,"stages":stages}
 
     def delete_many(self, ids: list[str]) -> int:
-        self.init_db(); clean = [str(x).strip() for x in ids if str(x).strip()]
-        if not clean: return 0
-        marks = ",".join(["?"] * len(clean))
+        self.init_db(); clean=[str(x).strip() for x in ids if str(x).strip()]
+        if not clean:return 0
+        marks=",".join(["?"]*len(clean))
         with self.connect() as conn:
-            cur = conn.execute(f"DELETE FROM crm_contacts WHERE id IN ({marks})", clean); return int(cur.rowcount or 0)
+            conn.execute(f"DELETE FROM crm_activities WHERE contact_id IN ({marks})",clean); cur=conn.execute(f"DELETE FROM crm_contacts WHERE id IN ({marks})",clean); return int(cur.rowcount or 0)
 
     def import_csv(self, raw: bytes) -> dict:
-        text = raw.decode("utf-8-sig", errors="replace"); reader = csv.DictReader(io.StringIO(text)); imported = skipped = 0
+        text=raw.decode("utf-8-sig",errors="replace"); reader=csv.DictReader(io.StringIO(text)); imported=skipped=0
         for row in reader:
-            normalized = {k: row.get(k, "") for k in CRM_COLUMNS}
-            if not any(str(v or "").strip() for v in normalized.values()): skipped += 1; continue
-            self.upsert_contact(normalized); imported += 1
-        return {"imported": imported, "skipped": skipped}
+            normalized={k:row.get(k,"") for k in CRM_COLUMNS}
+            if not any(str(v or "").strip() for v in normalized.values()): skipped+=1; continue
+            self.upsert_contact(normalized); imported+=1
+        return {"imported":imported,"skipped":skipped}
 
     def export_csv(self, contacts: list[dict] | None = None) -> str:
-        contacts = contacts if contacts is not None else self.list_contacts(limit=5000)
-        out = io.StringIO(); fields = ["id"] + CRM_COLUMNS + ["created_at", "updated_at"]
-        writer = csv.DictWriter(out, fieldnames=fields); writer.writeheader()
-        for item in contacts: writer.writerow({k: item.get(k, "") for k in fields})
-        return "\ufeff" + out.getvalue()
+        contacts=contacts if contacts is not None else self.list_contacts(limit=5000); out=io.StringIO(); fields=["id"]+CRM_COLUMNS+["created_at","updated_at"]; writer=csv.DictWriter(out,fieldnames=fields); writer.writeheader()
+        for item in contacts: writer.writerow({k:item.get(k,"") for k in fields})
+        return "\ufeff"+out.getvalue()
 
 
 def csv_template() -> str:
-    out = io.StringIO(); writer = csv.DictWriter(out, fieldnames=CRM_COLUMNS); writer.writeheader()
-    writer.writerow({"company_name":"Example Importer Ltd","contact_name":"Jane Smith","job_title":"Purchasing Manager","email":"jane@example.com","phone":"+1 555 0100","website":"https://example.com","country":"United States","city":"Los Angeles","linkedin":"https://linkedin.com/in/example","source":"Trade Show","status":"new","priority":"high","notes":"Interested in OEM/ODM","deal_stage":"new","lead_score":"","email_verification":"unknown","last_contacted_at":"","next_follow_up_at":""})
-    return "\ufeff" + out.getvalue()
+    out=io.StringIO(); writer=csv.DictWriter(out,fieldnames=CRM_COLUMNS); writer.writeheader(); writer.writerow({"company_name":"Example Importer Ltd","contact_name":"Jane Smith","job_title":"Purchasing Manager","email":"jane@example.com","phone":"+1 555 0100","website":"https://example.com","country":"United States","city":"Los Angeles","linkedin":"https://linkedin.com/in/example","source":"Trade Show","status":"new","priority":"high","notes":"Interested in OEM/ODM","deal_stage":"new","lead_score":"","email_verification":"unknown","last_contacted_at":"","next_follow_up_at":""}); return "\ufeff"+out.getvalue()

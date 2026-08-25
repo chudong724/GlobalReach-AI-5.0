@@ -11,123 +11,31 @@ export type CRMContact = {
   last_contacted_at: string; next_follow_up_at: string;
 };
 
-type PipelineSummary = { total: number; average_score: number; verified_emails: number; stages: Record<string, number> };
-
-const emptyContact: Omit<CRMContact, "id"> = {
-  company_name: "", contact_name: "", job_title: "", email: "", phone: "", website: "", country: "", city: "",
-  linkedin: "", source: "manual", status: "new", priority: "normal", notes: "", deal_stage: "new", lead_score: 0,
-  email_verification: "unknown", last_contacted_at: "", next_follow_up_at: "",
-};
-
+type PipelineSummary = { total: number; average_score: number; verified_emails: number; due_follow_ups?: number; stages: Record<string, number> };
+const emptyContact: Omit<CRMContact, "id"> = { company_name:"", contact_name:"", job_title:"", email:"", phone:"", website:"", country:"", city:"", linkedin:"", source:"manual", status:"new", priority:"normal", notes:"", deal_stage:"new", lead_score:0, email_verification:"unknown", last_contacted_at:"", next_follow_up_at:"" };
 const API_TOKEN = import.meta.env.VITE_API_ACCESS_TOKEN?.trim() ?? "";
-function authHeaders(extra?: HeadersInit): HeadersInit {
-  return API_TOKEN ? { ...(extra || {}), "X-API-Key": API_TOKEN } : (extra || {});
-}
-async function apiJson(path: string, init?: RequestInit) {
-  const response = await fetch(path, { ...init, headers: authHeaders(init?.headers) });
-  if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-  return response.json();
-}
-async function downloadFile(path: string, filename: string) {
-  const response = await fetch(path, { headers: authHeaders() });
-  if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-  const blob = await response.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
-}
+const authHeaders = (extra?: HeadersInit): HeadersInit => API_TOKEN ? { ...(extra || {}), "X-API-Key": API_TOKEN } : (extra || {});
+async function apiJson(path:string, init?:RequestInit){ const r=await fetch(path,{...init,headers:authHeaders(init?.headers)}); if(!r.ok) throw new Error(await r.text()||`HTTP ${r.status}`); return r.json(); }
+async function downloadFile(path:string, filename:string){ const r=await fetch(path,{headers:authHeaders()}); if(!r.ok) throw new Error(await r.text()); const blob=await r.blob(); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url;a.download=filename;a.click();URL.revokeObjectURL(url); }
 
-export function CRMPage() {
-  const [items, setItems] = useState<CRMContact[]>([]);
-  const [summary, setSummary] = useState<PipelineSummary>({ total: 0, average_score: 0, verified_emails: 0, stages: {} });
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [search, setSearch] = useState(""); const [stage, setStage] = useState("");
-  const [loading, setLoading] = useState(false); const [message, setMessage] = useState("");
-  const [draft, setDraft] = useState(emptyContact); const [showAdd, setShowAdd] = useState(false);
-
-  const load = async () => {
-    setLoading(true); setMessage("");
-    try {
-      const [contacts, pipeline] = await Promise.all([
-        apiJson(`/api/v1/crm/contacts?search=${encodeURIComponent(search)}&stage=${encodeURIComponent(stage)}&limit=2000`),
-        apiJson("/api/v1/crm/pipeline"),
-      ]);
-      setItems(contacts.items || []); setSummary(pipeline); setSelected(new Set());
-    } catch (e) { setMessage(`加载失败：${e instanceof Error ? e.message : String(e)}`); }
-    finally { setLoading(false); }
-  };
-  useEffect(() => { void load(); }, []);
-
-  const allChecked = useMemo(() => items.length > 0 && items.every((x) => selected.has(x.id)), [items, selected]);
-  const toggleAll = () => setSelected(allChecked ? new Set() : new Set(items.map((x) => x.id)));
-  const toggleOne = (id: string) => { const next = new Set(selected); next.has(id) ? next.delete(id) : next.add(id); setSelected(next); };
-
-  const postIds = async (path: string) => apiJson(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: Array.from(selected) }) });
-  const deleteSelected = async () => {
-    if (!selected.size || !window.confirm(`确认删除选中的 ${selected.size} 个客户吗？`)) return;
-    try { const data = await postIds("/api/v1/crm/contacts/delete-many"); setMessage(`已删除 ${data.deleted ?? 0} 个客户`); await load(); }
-    catch (e) { setMessage(`删除失败：${e instanceof Error ? e.message : String(e)}`); }
-  };
-  const rescore = async () => {
-    try { const data = await postIds("/api/v1/crm/contacts/rescore"); setMessage(`已重新评分 ${data.rescored ?? 0} 个客户`); await load(); }
-    catch (e) { setMessage(`评分失败：${e instanceof Error ? e.message : String(e)}`); }
-  };
-  const verifyEmails = async () => {
-    if (!selected.size) { setMessage("请先选择需要验证邮箱的客户"); return; }
-    try { const data = await postIds("/api/v1/crm/contacts/verify-email"); setMessage(`邮箱验证完成：${data.verified ?? 0} 个`); await load(); }
-    catch (e) { setMessage(`邮箱验证失败：${e instanceof Error ? e.message : String(e)}`); }
-  };
-  const addContact = async () => {
-    try {
-      await apiJson("/api/v1/crm/contacts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draft) });
-      setDraft(emptyContact); setShowAdd(false); setMessage("客户已保存"); await load();
-    } catch (e) { setMessage(`保存失败：${e instanceof Error ? e.message : String(e)}`); }
-  };
-  const importCsv = async (file?: File) => {
-    if (!file) return; const form = new FormData(); form.append("file", file);
-    try { const data = await apiJson("/api/v1/crm/import", { method: "POST", body: form }); setMessage(`导入完成：${data.imported ?? 0} 条，跳过 ${data.skipped ?? 0} 条`); await load(); }
-    catch (e) { setMessage(`导入失败：${e instanceof Error ? e.message : String(e)}`); }
-  };
-
-  const stages = ["new", "qualified", "contacted", "replied", "negotiating", "won", "lost"];
+export function CRMPage(){
+  const [items,setItems]=useState<CRMContact[]>([]); const [summary,setSummary]=useState<PipelineSummary>({total:0,average_score:0,verified_emails:0,stages:{}});
+  const [selected,setSelected]=useState<Set<string>>(new Set()); const [search,setSearch]=useState(""); const [stage,setStage]=useState(""); const [loading,setLoading]=useState(false); const [message,setMessage]=useState(""); const [draft,setDraft]=useState(emptyContact); const [showAdd,setShowAdd]=useState(false);
+  const stages=["new","qualified","contacted","replied","negotiating","won","lost"];
+  const load=async()=>{ setLoading(true);setMessage(""); try{ const [c,p]=await Promise.all([apiJson(`/api/v1/crm/contacts?search=${encodeURIComponent(search)}&stage=${encodeURIComponent(stage)}&limit=2000`),apiJson("/api/v1/crm/pipeline")]); setItems(c.items||[]);setSummary(p);setSelected(new Set()); }catch(e){setMessage(`加载失败：${e instanceof Error?e.message:String(e)}`);}finally{setLoading(false);} };
+  useEffect(()=>{void load();},[]);
+  const allChecked=useMemo(()=>items.length>0&&items.every(x=>selected.has(x.id)),[items,selected]);
+  const toggleAll=()=>setSelected(allChecked?new Set():new Set(items.map(x=>x.id))); const toggleOne=(id:string)=>{const n=new Set(selected);n.has(id)?n.delete(id):n.add(id);setSelected(n);};
+  const postIds=(path:string)=>apiJson(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids:Array.from(selected)})});
+  const deleteSelected=async()=>{if(!selected.size||!confirm(`确认删除选中的 ${selected.size} 个客户吗？`))return;try{const d=await postIds("/api/v1/crm/contacts/delete-many");setMessage(`已删除 ${d.deleted||0} 个客户`);await load();}catch(e){setMessage(`删除失败：${e}`);}};
+  const rescore=async()=>{try{const d=await postIds("/api/v1/crm/contacts/rescore");setMessage(`已重新评分 ${d.rescored||0} 个客户`);await load();}catch(e){setMessage(`评分失败：${e}`);}};
+  const verify=async()=>{if(!selected.size){setMessage("请先选择客户");return;}try{const d=await postIds("/api/v1/crm/contacts/verify-email");setMessage(`邮箱验证完成：${d.verified||0} 个`);await load();}catch(e){setMessage(`邮箱验证失败：${e}`);}};
+  const add=async()=>{try{await apiJson("/api/v1/crm/contacts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(draft)});setDraft(emptyContact);setShowAdd(false);setMessage("客户已保存");await load();}catch(e){setMessage(`保存失败：${e}`);}};
+  const importCsv=async(file?:File)=>{if(!file)return;const f=new FormData();f.append("file",file);try{const d=await apiJson("/api/v1/crm/import",{method:"POST",body:f});setMessage(`导入完成：${d.imported||0} 条，跳过 ${d.skipped||0} 条`);await load();}catch(e){setMessage(`导入失败：${e}`);}};
   return <div className="space-y-6">
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <div><h1 className="flex items-center gap-2 text-2xl font-bold"><Users className="h-6 w-6" />客户 CRM</h1><p className="mt-1 text-sm text-muted-foreground">从线索发现到成交的统一销售 Pipeline。</p></div>
-      <div className="flex flex-wrap gap-2">
-        <Button variant="outline" onClick={() => void downloadFile("/api/v1/crm/template", "wenmei-crm-import-template.csv")}><FileDown className="mr-2 h-4 w-4" />下载模板</Button>
-        <label className="inline-flex cursor-pointer items-center rounded-md border px-3 py-2 text-sm font-medium hover:bg-accent"><Upload className="mr-2 h-4 w-4" />导入 CSV<input type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => void importCsv(e.target.files?.[0])} /></label>
-        <Button variant="outline" onClick={() => void downloadFile("/api/v1/crm/export", "wenmei-crm-export.csv")}><Download className="mr-2 h-4 w-4" />导出全部</Button>
-        <Button onClick={() => setShowAdd(!showAdd)}><Plus className="mr-2 h-4 w-4" />新增客户</Button>
-      </div>
-    </div>
-
-    <div className="grid gap-3 md:grid-cols-4">
-      <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">客户总数</div><div className="text-2xl font-bold">{summary.total}</div></CardContent></Card>
-      <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">平均线索评分</div><div className="text-2xl font-bold">{summary.average_score}</div></CardContent></Card>
-      <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">已验证邮箱</div><div className="text-2xl font-bold">{summary.verified_emails}</div></CardContent></Card>
-      <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">正在谈判</div><div className="text-2xl font-bold">{summary.stages.negotiating || 0}</div></CardContent></Card>
-    </div>
-
-    {showAdd && <Card><CardHeader><CardTitle className="text-base">新增客户</CardTitle></CardHeader><CardContent className="grid gap-3 md:grid-cols-3">
-      {(["company_name","contact_name","job_title","email","phone","website","country","city","linkedin","source"] as const).map((key) => <Input key={key} placeholder={{company_name:"公司名称",contact_name:"联系人",job_title:"职位",email:"邮箱",phone:"电话",website:"网站",country:"国家",city:"城市",linkedin:"LinkedIn",source:"来源"}[key]} value={draft[key]} onChange={(e) => setDraft({...draft,[key]:e.target.value})} />)}
-      <select className="h-10 rounded-md border bg-background px-3 text-sm" value={draft.deal_stage} onChange={(e) => setDraft({...draft,deal_stage:e.target.value})}>{stages.map(s => <option key={s} value={s}>{s}</option>)}</select>
-      <Input placeholder="备注" value={draft.notes} onChange={(e) => setDraft({...draft,notes:e.target.value})} />
-      <div className="flex gap-2"><Button onClick={() => void addContact()}>保存</Button><Button variant="outline" onClick={() => setShowAdd(false)}>取消</Button></div>
-    </CardContent></Card>}
-
-    <Card><CardContent className="pt-6">
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="relative min-w-64 flex-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input className="pl-9" placeholder="搜索公司、联系人、邮箱、网站或国家" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void load()} /></div>
-        <select className="h-10 rounded-md border bg-background px-3 text-sm" value={stage} onChange={(e) => setStage(e.target.value)}><option value="">全部阶段</option>{stages.map(s => <option key={s} value={s}>{s}</option>)}</select>
-        <Button variant="outline" onClick={() => void load()}><RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />刷新</Button>
-        <Button variant="outline" onClick={() => void rescore()}><Sparkles className="mr-2 h-4 w-4" />重新评分</Button>
-        <Button variant="outline" disabled={!selected.size} onClick={() => void verifyEmails()}><ShieldCheck className="mr-2 h-4 w-4" />验证邮箱</Button>
-        <Button variant="destructive" disabled={!selected.size} onClick={() => void deleteSelected()}><Trash2 className="mr-2 h-4 w-4" />批量删除 ({selected.size})</Button>
-      </div>
-      {message && <div className="mb-4 rounded-md border bg-muted/40 px-3 py-2 text-sm">{message}</div>}
-      <div className="overflow-x-auto rounded-md border"><table className="w-full min-w-[1300px] text-sm"><thead className="bg-muted/50"><tr>
-        <th className="p-3 text-left"><input type="checkbox" checked={allChecked} onChange={toggleAll} /></th><th className="p-3 text-left">评分</th><th className="p-3 text-left">阶段</th><th className="p-3 text-left">公司</th><th className="p-3 text-left">联系人</th><th className="p-3 text-left">职位</th><th className="p-3 text-left">邮箱</th><th className="p-3 text-left">邮箱验证</th><th className="p-3 text-left">电话</th><th className="p-3 text-left">国家/城市</th><th className="p-3 text-left">网站</th><th className="p-3 text-left">来源</th>
-      </tr></thead><tbody>{items.map(x => <tr key={x.id} className="border-t hover:bg-muted/30">
-        <td className="p-3"><input type="checkbox" checked={selected.has(x.id)} onChange={() => toggleOne(x.id)} /></td><td className="p-3 font-bold">{x.lead_score ?? 0}</td><td className="p-3">{x.deal_stage || "new"}</td><td className="p-3 font-medium">{x.company_name || "—"}</td><td className="p-3">{x.contact_name || "—"}</td><td className="p-3">{x.job_title || "—"}</td><td className="p-3">{x.email || "—"}</td><td className="p-3">{x.email_verification || "unknown"}</td><td className="p-3">{x.phone || "—"}</td><td className="p-3">{[x.country,x.city].filter(Boolean).join(" / ") || "—"}</td><td className="p-3">{x.website ? <a className="text-primary underline" href={x.website} target="_blank" rel="noreferrer">打开</a> : "—"}</td><td className="p-3">{x.source || "—"}</td>
-      </tr>)}</tbody></table>{!loading && !items.length && <div className="p-10 text-center text-muted-foreground">暂无客户数据。</div>}</div>
-    </CardContent></Card>
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="flex items-center gap-2 text-2xl font-bold"><Users className="h-6 w-6"/>客户 CRM</h1><p className="mt-1 text-sm text-muted-foreground">获客结果自动入库；点击公司名称进入客户详情、AI 销售计划与跟进时间线。</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={()=>void downloadFile("/api/v1/crm/template","wenmei-crm-import-template.csv")}><FileDown className="mr-2 h-4 w-4"/>下载模板</Button><label className="inline-flex cursor-pointer items-center rounded-md border px-3 py-2 text-sm font-medium hover:bg-accent"><Upload className="mr-2 h-4 w-4"/>导入 CSV<input type="file" accept=".csv,text/csv" className="hidden" onChange={e=>void importCsv(e.target.files?.[0])}/></label><Button variant="outline" onClick={()=>void downloadFile("/api/v1/crm/export","wenmei-crm-export.csv")}><Download className="mr-2 h-4 w-4"/>导出全部</Button><Button onClick={()=>setShowAdd(!showAdd)}><Plus className="mr-2 h-4 w-4"/>新增客户</Button></div></div>
+    <div className="grid gap-3 md:grid-cols-5"><Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">客户总数</div><div className="text-2xl font-bold">{summary.total}</div></CardContent></Card><Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">平均评分</div><div className="text-2xl font-bold">{summary.average_score}</div></CardContent></Card><Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">已验证邮箱</div><div className="text-2xl font-bold">{summary.verified_emails}</div></CardContent></Card><Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">待跟进</div><div className="text-2xl font-bold">{summary.due_follow_ups||0}</div></CardContent></Card><Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">谈判中</div><div className="text-2xl font-bold">{summary.stages.negotiating||0}</div></CardContent></Card></div>
+    {showAdd&&<Card><CardHeader><CardTitle className="text-base">新增客户</CardTitle></CardHeader><CardContent className="grid gap-3 md:grid-cols-3">{(["company_name","contact_name","job_title","email","phone","website","country","city","linkedin","source"] as const).map(key=><Input key={key} placeholder={{company_name:"公司名称",contact_name:"联系人",job_title:"职位",email:"邮箱",phone:"电话",website:"网站",country:"国家",city:"城市",linkedin:"LinkedIn",source:"来源"}[key]} value={draft[key]} onChange={e=>setDraft({...draft,[key]:e.target.value})}/>)}<Input placeholder="备注" value={draft.notes} onChange={e=>setDraft({...draft,notes:e.target.value})}/><div className="flex gap-2"><Button onClick={()=>void add()}>保存</Button><Button variant="outline" onClick={()=>setShowAdd(false)}>取消</Button></div></CardContent></Card>}
+    <Card><CardContent className="pt-6"><div className="mb-4 flex flex-wrap items-center gap-2"><div className="relative min-w-64 flex-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"/><Input className="pl-9" placeholder="搜索公司、联系人、邮箱、网站或国家" value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>e.key==="Enter"&&void load()}/></div><select className="h-10 rounded-md border bg-background px-3 text-sm" value={stage} onChange={e=>setStage(e.target.value)}><option value="">全部阶段</option>{stages.map(s=><option key={s} value={s}>{s}</option>)}</select><Button variant="outline" onClick={()=>void load()}><RefreshCw className={`mr-2 h-4 w-4 ${loading?"animate-spin":""}`}/>刷新</Button><Button variant="outline" onClick={()=>void rescore()}><Sparkles className="mr-2 h-4 w-4"/>重新评分</Button><Button variant="outline" disabled={!selected.size} onClick={()=>void verify()}><ShieldCheck className="mr-2 h-4 w-4"/>验证邮箱</Button><Button variant="destructive" disabled={!selected.size} onClick={()=>void deleteSelected()}><Trash2 className="mr-2 h-4 w-4"/>批量删除 ({selected.size})</Button></div>{message&&<div className="mb-4 rounded-md border bg-muted/40 px-3 py-2 text-sm">{message}</div>}<div className="overflow-x-auto rounded-md border"><table className="w-full min-w-[1250px] text-sm"><thead className="bg-muted/50"><tr><th className="p-3 text-left"><input type="checkbox" checked={allChecked} onChange={toggleAll}/></th><th className="p-3 text-left">评分</th><th className="p-3 text-left">阶段</th><th className="p-3 text-left">公司</th><th className="p-3 text-left">联系人</th><th className="p-3 text-left">邮箱</th><th className="p-3 text-left">验证</th><th className="p-3 text-left">国家</th><th className="p-3 text-left">下次跟进</th><th className="p-3 text-left">来源</th></tr></thead><tbody>{items.map(x=><tr key={x.id} className="border-t hover:bg-muted/30"><td className="p-3"><input type="checkbox" checked={selected.has(x.id)} onChange={()=>toggleOne(x.id)}/></td><td className="p-3 font-bold">{x.lead_score||0}</td><td className="p-3">{x.deal_stage||"new"}</td><td className="p-3 font-medium"><a className="text-primary underline" href={`/crm/${x.id}`}>{x.company_name||x.email||"查看详情"}</a></td><td className="p-3">{x.contact_name||"—"}</td><td className="p-3">{x.email||"—"}</td><td className="p-3">{x.email_verification||"unknown"}</td><td className="p-3">{x.country||"—"}</td><td className="p-3">{x.next_follow_up_at?new Date(x.next_follow_up_at).toLocaleDateString():"—"}</td><td className="p-3">{x.source||"—"}</td></tr>)}</tbody></table>{!loading&&!items.length&&<div className="p-10 text-center text-muted-foreground">暂无客户数据。</div>}</div></CardContent></Card>
   </div>;
 }
