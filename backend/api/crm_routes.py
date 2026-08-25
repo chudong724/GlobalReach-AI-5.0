@@ -12,12 +12,14 @@ from pydantic import BaseModel, Field
 from api.security import require_api_access
 from crm.automation import suggested_follow_up_date
 from crm.store import CRMStore, csv_template
+from knowledge.store import KnowledgeStore
 from tools.email_verifier import EmailVerifierTool
 from tools.llm_client import LLMTool
 
 router = APIRouter(prefix="/api/v1/crm", tags=["CRM"], dependencies=[Depends(require_api_access)])
-_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "crm.db"
-store = CRMStore(str(_DB_PATH))
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent
+store = CRMStore(str(_BACKEND_ROOT / "data" / "crm.db"))
+knowledge_store = KnowledgeStore(str(_BACKEND_ROOT / "data" / "knowledge.db"))
 
 
 class ContactPayload(BaseModel):
@@ -53,6 +55,16 @@ def _clean_json(text: str) -> dict[str, Any]:
         return {"summary": raw}
 
 
+def _knowledge_context(contact: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    query = " ".join(str(contact.get(k) or "") for k in ["company_name", "job_title", "country", "notes", "source"])
+    items = knowledge_store.search_context(query, limit=8)
+    context = "\n\n".join(
+        f"[{item.get('category','general')}] {item.get('title','')}\n{item.get('content','')}"
+        for item in items
+    )
+    return items, context
+
+
 @router.get("/contacts")
 def list_contacts(search: str = "", limit: int = 1000, stage: str = "") -> dict[str, Any]:
     contacts = store.list_contacts(search=search, limit=limit, stage=stage)
@@ -82,18 +94,14 @@ def update_sales_state(contact_id: str, payload: SalesStatePayload) -> dict[str,
     item = store.update_sales_state(contact_id, deal_stage=payload.deal_stage, next_follow_up_at=payload.next_follow_up_at, mark_contacted=payload.mark_contacted)
     if payload.deal_stage and payload.deal_stage != current.get("deal_stage"):
         store.add_activity(contact_id, "stage_changed", f"销售阶段：{current.get('deal_stage','new')} → {payload.deal_stage}")
-    if payload.next_follow_up_at:
-        store.add_activity(contact_id, "follow_up_scheduled", f"下次跟进：{payload.next_follow_up_at}")
-    if payload.mark_contacted:
-        store.add_activity(contact_id, "contacted", payload.note or "已联系客户")
-    elif payload.note:
-        store.add_activity(contact_id, "note", payload.note)
+    if payload.next_follow_up_at: store.add_activity(contact_id, "follow_up_scheduled", f"下次跟进：{payload.next_follow_up_at}")
+    if payload.mark_contacted: store.add_activity(contact_id, "contacted", payload.note or "已联系客户")
+    elif payload.note: store.add_activity(contact_id, "note", payload.note)
     return item or {}
 
 
 @router.get("/contacts/{contact_id}/activities")
-def activities(contact_id: str) -> dict[str, Any]:
-    return {"items": store.list_activities(contact_id)}
+def activities(contact_id: str) -> dict[str, Any]: return {"items": store.list_activities(contact_id)}
 
 
 @router.post("/contacts/{contact_id}/activities")
@@ -106,26 +114,25 @@ def add_activity(contact_id: str, payload: ActivityPayload) -> dict[str, Any]:
 async def ai_sales_plan(contact_id: str) -> dict[str, Any]:
     contact = store.get_contact(contact_id)
     if not contact: raise HTTPException(status_code=404, detail="Contact not found")
-    prompt = f"""你是资深B2B外贸销售顾问。请基于以下客户资料，为销售人员生成可立即执行的销售计划。\n客户资料：{json.dumps(contact, ensure_ascii=False)}\n请只返回JSON对象，字段必须包括：rating_reason（为什么值得/不值得跟进，中文，80字内）、buyer_hypothesis（客户可能采购需求）、next_action（下一步动作）、negotiation_strategy（谈判策略，3点以内）、email_subject（英文开发信主题）、email_body（英文开发信正文，120-180词，专业、非垃圾邮件风格）、follow_up_days（建议几天后跟进，整数1-14）、risk_flags（字符串数组）。不要虚构未提供的认证、价格、产能或客户事实。"""
+    knowledge_items, knowledge_context = _knowledge_context(contact)
+    prompt = f"""你是资深B2B外贸销售顾问。请基于客户资料和企业知识库，为销售人员生成可立即执行的销售计划。\n客户资料：{json.dumps(contact, ensure_ascii=False)}\n企业知识库（只能把这里明确提供的公司/产品事实当作已知事实）：\n{knowledge_context or '暂无匹配知识，请不要虚构产品参数、MOQ、价格、认证、产能或交期。'}\n请只返回JSON对象，字段必须包括：rating_reason（中文，80字内）、buyer_hypothesis、next_action、negotiation_strategy（3点以内）、email_subject（英文）、email_body（英文120-180词）、follow_up_days（1-14整数）、risk_flags（字符串数组）、knowledge_used（列出实际引用的知识点标题）。若知识库没有相关事实，明确采用中性表述，不得编造。"""
     llm = LLMTool(model_type="reasoning", agent="crm_sales_advisor")
-    text = await llm.generate(prompt, system="Return valid JSON only. Be evidence-grounded and concise.", temperature=0.2, max_tokens=1800, response_format={"type":"json_object"})
+    text = await llm.generate(prompt, system="Return valid JSON only. Use enterprise facts only when present in supplied knowledge.", temperature=0.2, max_tokens=2000, response_format={"type":"json_object"})
     plan = _clean_json(text)
     try: days = max(1, min(14, int(plan.get("follow_up_days", 3))))
     except Exception: days = 3
     follow_up_at = suggested_follow_up_date(days)
     store.update_sales_state(contact_id, next_follow_up_at=follow_up_at)
-    store.add_activity(contact_id, "ai_sales_plan", "AI 已生成客户评级、开发信与谈判/跟进策略", metadata={"plan": plan, "next_follow_up_at": follow_up_at})
-    return {"plan": plan, "next_follow_up_at": follow_up_at}
+    store.add_activity(contact_id, "ai_sales_plan", "AI 已基于企业知识库生成销售计划", metadata={"plan": plan, "next_follow_up_at": follow_up_at, "knowledge_item_ids": [x.get("id") for x in knowledge_items]})
+    return {"plan": plan, "next_follow_up_at": follow_up_at, "knowledge_items": [{"id":x.get("id"),"title":x.get("title"),"category":x.get("category")} for x in knowledge_items]}
 
 
 @router.post("/contacts/delete-many")
-def delete_many(payload: IdsPayload) -> dict[str, int]:
-    return {"deleted": store.delete_many(payload.ids)}
+def delete_many(payload: IdsPayload) -> dict[str, int]: return {"deleted": store.delete_many(payload.ids)}
 
 
 @router.post("/contacts/rescore")
-def rescore(payload: IdsPayload) -> dict[str, int]:
-    return {"rescored": store.rescore(payload.ids or None)}
+def rescore(payload: IdsPayload) -> dict[str, int]: return {"rescored": store.rescore(payload.ids or None)}
 
 
 @router.post("/contacts/verify-email")
