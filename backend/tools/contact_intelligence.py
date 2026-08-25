@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from urllib.parse import urlparse, urljoin
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urljoin, urlparse
+
+import httpx
 
 from tools.email_finder import extract_emails_from_text
 from tools.email_verifier import EmailVerifierTool
@@ -9,6 +15,8 @@ from tools.jina_reader import JinaReaderTool
 
 COMMON_PATHS = ("", "/contact", "/contact-us", "/about", "/about-us", "/team", "/company")
 GENERIC_LOCAL_PARTS = {"info", "sales", "contact", "hello", "support", "office", "business", "marketing", "export"}
+HUNTER_MONTHLY_CAP = 50
+_USAGE_PATH = Path(__file__).resolve().parent.parent / "data" / "hunter_usage.json"
 
 
 def _normalize_website(website: str) -> str:
@@ -30,13 +38,7 @@ def _name_patterns(full_name: str, domain: str) -> list[str]:
     if len(parts) < 2 or not domain:
         return []
     first, last = parts[0], parts[-1]
-    values = [
-        f"{first}.{last}@{domain}",
-        f"{first}@{domain}",
-        f"{first[0]}{last}@{domain}",
-        f"{first}{last}@{domain}",
-        f"{last}.{first}@{domain}",
-    ]
+    values = [f"{first}.{last}@{domain}", f"{first}@{domain}", f"{first[0]}{last}@{domain}", f"{first}{last}@{domain}", f"{last}.{first}@{domain}"]
     return list(dict.fromkeys(values))
 
 
@@ -44,14 +46,52 @@ def _base_confidence(email: str, *, source_type: str, company_domain: str) -> in
     local, _, domain = email.lower().partition("@")
     if source_type == "website":
         score = 95 if domain == company_domain else 78
-        if local in GENERIC_LOCAL_PARTS:
-            score -= 8
-        return score
+        return score - 8 if local in GENERIC_LOCAL_PARTS else score
+    if source_type == "hunter":
+        return 90
     if source_type == "search":
         return 82 if domain == company_domain else 68
     if source_type == "pattern":
         return 42
     return 50
+
+
+def _hunter_usage() -> dict:
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    try:
+        data = json.loads(_USAGE_PATH.read_text(encoding="utf-8")) if _USAGE_PATH.exists() else {}
+    except Exception:
+        data = {}
+    if data.get("month") != month:
+        data = {"month": month, "successful_finds": 0}
+    return data
+
+
+def _record_hunter_success() -> None:
+    data = _hunter_usage()
+    data["successful_finds"] = int(data.get("successful_finds", 0)) + 1
+    _USAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _USAGE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+async def _hunter_find(domain: str, full_name: str) -> dict | None:
+    key = os.getenv("HUNTER_API_KEY", "").strip()
+    parts = [p for p in str(full_name or "").split() if p.strip()]
+    usage = _hunter_usage()
+    if not key or len(parts) < 2 or int(usage.get("successful_finds", 0)) >= HUNTER_MONTHLY_CAP:
+        return None
+    params = {"domain": domain, "first_name": parts[0], "last_name": parts[-1], "api_key": key}
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.get("https://api.hunter.io/v2/email-finder", params=params)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        data = (response.json() or {}).get("data") or {}
+    email = str(data.get("email") or "").strip().lower()
+    if not email:
+        return None
+    _record_hunter_success()
+    return data
 
 
 async def discover_contact_emails(website: str, *, contact_name: str = "", company_name: str = "", max_results: int = 20) -> dict:
@@ -65,25 +105,18 @@ async def discover_contact_emails(website: str, *, contact_name: str = "", compa
     reader = JinaReaderTool()
     verifier = EmailVerifierTool()
 
-    async def add(email: str, source_type: str, source_url: str, evidence: str = "") -> None:
+    async def add(email: str, source_type: str, source_url: str, evidence: str = "", source_score: int | None = None) -> None:
         key = email.lower().strip()
         if not key:
             return
-        base = _base_confidence(key, source_type=source_type, company_domain=domain)
+        base = source_score if source_score is not None else _base_confidence(key, source_type=source_type, company_domain=domain)
         existing = candidates.get(key)
-        item = existing or {
-            "email": key,
-            "source_type": source_type,
-            "source_urls": [],
-            "evidence": [],
-            "confidence": base,
-            "verification": {},
-        }
+        item = existing or {"email": key, "source_type": source_type, "source_urls": [], "evidence": [], "confidence": base, "verification": {}}
         if source_url and source_url not in item["source_urls"]:
             item["source_urls"].append(source_url)
         if evidence and evidence not in item["evidence"]:
             item["evidence"].append(evidence[:300])
-        item["confidence"] = max(int(item.get("confidence", 0)), base)
+        item["confidence"] = max(int(item.get("confidence", 0)), int(base))
         if existing and source_type == "website":
             item["confidence"] = min(99, item["confidence"] + 3)
         candidates[key] = item
@@ -101,12 +134,9 @@ async def discover_contact_emails(website: str, *, contact_name: str = "", compa
     finally:
         await reader.close()
 
-    # Search-engine evidence is supplemental and only used when Serper is configured.
     search = GoogleSearchTool()
     try:
-        query = f'site:{domain} "@{domain}" contact email'
-        if company_name:
-            query = f'"{company_name}" "@{domain}" email'
+        query = f'site:{domain} "@{domain}" contact email' if not company_name else f'"{company_name}" "@{domain}" email'
         try:
             results = await search.search(query, num=10)
             for result in results:
@@ -118,7 +148,21 @@ async def discover_contact_emails(website: str, *, contact_name: str = "", compa
     finally:
         await search.close()
 
-    # Pattern inference is deliberately low confidence and never presented as verified discovery.
+    # Hunter is an optional last-resort provider, never the primary source.
+    strong_public = any(int(item.get("confidence", 0)) >= 85 for item in candidates.values())
+    if not strong_public and contact_name:
+        try:
+            hunter = await _hunter_find(domain, contact_name)
+            if hunter:
+                score = max(60, min(99, int(hunter.get("score") or 90)))
+                sources = hunter.get("sources") or []
+                source_urls = [str(x.get("uri") or "") for x in sources if isinstance(x, dict) and x.get("uri")]
+                await add(str(hunter.get("email") or ""), "hunter", source_urls[0] if source_urls else site, "Hunter Email Finder fallback", score)
+                for extra_url in source_urls[1:]:
+                    await add(str(hunter.get("email") or ""), "hunter", extra_url, "Hunter public source")
+        except Exception as exc:
+            errors.append(f"hunter: {type(exc).__name__}")
+
     for email in _name_patterns(contact_name, domain):
         await add(email, "pattern", site, f"Inferred from contact name pattern: {contact_name}")
 
@@ -132,12 +176,15 @@ async def discover_contact_emails(website: str, *, contact_name: str = "", compa
             item["confidence"] = max(0, int(item["confidence"]) - 25)
         if item["source_type"] == "pattern":
             item["status"] = "inferred"
+        elif item["source_type"] == "hunter":
+            item["status"] = "hunter-fallback"
         elif check.get("is_deliverable"):
             item["status"] = "public+mx"
         else:
             item["status"] = "public-unverified"
 
     ordered.sort(key=lambda x: (-int(x.get("confidence", 0)), x["email"]))
+    usage = _hunter_usage()
     return {
         "website": site,
         "domain": domain,
@@ -145,5 +192,6 @@ async def discover_contact_emails(website: str, *, contact_name: str = "", compa
         "company_name": company_name,
         "candidates": ordered[:max(1, min(max_results, 50))],
         "errors": errors[:20],
-        "policy_note": "Pattern-derived addresses are inference only. MX confirms domain mail capability, not mailbox existence.",
+        "hunter": {"configured": bool(os.getenv("HUNTER_API_KEY", "").strip()), "monthly_successes": int(usage.get("successful_finds", 0)), "monthly_cap": HUNTER_MONTHLY_CAP},
+        "policy_note": "Pattern-derived addresses are inference only. MX confirms domain mail capability, not mailbox existence. Hunter is optional fallback only.",
     }
