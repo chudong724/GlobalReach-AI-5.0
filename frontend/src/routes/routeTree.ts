@@ -5,59 +5,20 @@ import { NewHuntPage } from "./new-hunt";
 import { HuntDetailPage } from "./hunt-detail";
 import { AutomationJobPage } from "./automation-job";
 import { CRMPage } from "./crm";
+import { CRMDetailPage } from "./crm-detail";
 import { DeepSeekPage } from "./deepseek";
 import { SettingsPage } from "./settings";
 
 const rootRoute = createRootRoute({ component: RootLayout });
-
-const indexRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/",
-  component: DashboardPage,
-});
-
-const newHuntRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/hunts/new",
-  component: NewHuntPage,
-});
-
-const huntDetailRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/hunts/$huntId",
-  component: HuntDetailPage,
-});
-
-const automationJobRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/automation/$jobId",
-  component: AutomationJobPage,
-});
-
-const crmRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/crm",
-  component: CRMPage,
-});
-
-const deepSeekRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/deepseek",
-  component: DeepSeekPage,
-});
-
-const settingsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/settings",
-  component: SettingsPage,
-});
+const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: DashboardPage });
+const newHuntRoute = createRoute({ getParentRoute: () => rootRoute, path: "/hunts/new", component: NewHuntPage });
+const huntDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/hunts/$huntId", component: HuntDetailPage });
+const automationJobRoute = createRoute({ getParentRoute: () => rootRoute, path: "/automation/$jobId", component: AutomationJobPage });
+const crmRoute = createRoute({ getParentRoute: () => rootRoute, path: "/crm", component: CRMPage });
+const crmDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/crm/$contactId", component: CRMDetailPage });
+const deepSeekRoute = createRoute({ getParentRoute: () => rootRoute, path: "/deepseek", component: DeepSeekPage });
+const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage });
 
 export const routeTree = rootRoute.addChildren([
-  indexRoute,
-  newHuntRoute,
-  huntDetailRoute,
-  automationJobRoute,
-  crmRoute,
-  deepSeekRoute,
-  settingsRoute,
+  indexRoute, newHuntRoute, huntDetailRoute, automationJobRoute, crmRoute, crmDetailRoute, deepSeekRoute, settingsRoute,
 ]);
