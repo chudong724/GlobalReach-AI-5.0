@@ -8,6 +8,7 @@ import { CRMPage } from "./crm";
 import { CRMDetailPage } from "./crm-detail";
 import { FollowUpsPage } from "./follow-ups";
 import { SalesOpsPage } from "./sales-ops";
+import { CommercialOpsPage } from "./commercial-ops";
 import { KnowledgePage } from "./knowledge";
 import { DeepSeekPage } from "./deepseek";
 import { SettingsPage } from "./settings";
@@ -21,11 +22,12 @@ const crmRoute = createRoute({ getParentRoute: () => rootRoute, path: "/crm", co
 const crmDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/crm/$contactId", component: CRMDetailPage });
 const followUpsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/follow-ups", component: FollowUpsPage });
 const salesOpsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/sales-ops", component: SalesOpsPage });
+const commercialOpsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/commercial-ops", component: CommercialOpsPage });
 const knowledgeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/knowledge", component: KnowledgePage });
 const deepSeekRoute = createRoute({ getParentRoute: () => rootRoute, path: "/deepseek", component: DeepSeekPage });
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage });
 
 export const routeTree = rootRoute.addChildren([
   indexRoute, newHuntRoute, huntDetailRoute, automationJobRoute, crmRoute, crmDetailRoute,
-  followUpsRoute, salesOpsRoute, knowledgeRoute, deepSeekRoute, settingsRoute,
+  followUpsRoute, salesOpsRoute, commercialOpsRoute, knowledgeRoute, deepSeekRoute, settingsRoute,
 ]);
