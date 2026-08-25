@@ -1,5 +1,5 @@
 import { Link, Outlet } from "@tanstack/react-router";
-import { Globe2, LayoutDashboard, Plus, Settings } from "lucide-react";
+import { Globe2, LayoutDashboard, Plus, Settings, Users } from "lucide-react";
 
 export function RootLayout() {
   return (
@@ -24,6 +24,13 @@ export function RootLayout() {
             >
               <Plus className="h-4 w-4" />
               新建任务
+            </Link>
+            <Link
+              to="/crm"
+              className="flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground"
+            >
+              <Users className="h-4 w-4" />
+              客户 CRM
             </Link>
           </nav>
           <div className="ml-auto">
