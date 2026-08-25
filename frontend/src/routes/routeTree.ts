@@ -5,6 +5,7 @@ import { NewHuntPage } from "./new-hunt";
 import { HuntDetailPage } from "./hunt-detail";
 import { AutomationJobPage } from "./automation-job";
 import { CRMPage } from "./crm";
+import { DeepSeekPage } from "./deepseek";
 import { SettingsPage } from "./settings";
 
 const rootRoute = createRootRoute({ component: RootLayout });
@@ -39,6 +40,12 @@ const crmRoute = createRoute({
   component: CRMPage,
 });
 
+const deepSeekRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/deepseek",
+  component: DeepSeekPage,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
@@ -51,5 +58,6 @@ export const routeTree = rootRoute.addChildren([
   huntDetailRoute,
   automationJobRoute,
   crmRoute,
+  deepSeekRoute,
   settingsRoute,
 ]);
