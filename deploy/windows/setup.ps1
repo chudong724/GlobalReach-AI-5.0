@@ -5,7 +5,7 @@ $Backend = Join-Path $Root "backend"
 $Frontend = Join-Path $Root "frontend"
 $VenvPython = Join-Path $Backend ".venv\Scripts\python.exe"
 
-Write-Host "=== AI Find Customer - Windows Setup ===" -ForegroundColor Cyan
+Write-Host "=== 文美全球AI获客系统 - Windows Setup ===" -ForegroundColor Cyan
 
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     throw "Python was not found. Install Python 3.11+ and make sure 'python' is on PATH."
@@ -39,6 +39,6 @@ Push-Location $Frontend
 npm install
 Pop-Location
 
-Write-Host "" 
-Write-Host "Setup complete." -ForegroundColor Green
+Write-Host ""
+Write-Host "文美全球AI获客系统 setup complete." -ForegroundColor Green
 Write-Host "Next: edit backend/.env with your LLM and search API keys, then run deploy/windows/start.ps1"
