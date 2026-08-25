@@ -3,13 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from api.security import require_api_access
 from crm.store import CRMStore, csv_template
 
-router = APIRouter(prefix="/api/v1/crm", tags=["CRM"])
+router = APIRouter(prefix="/api/v1/crm", tags=["CRM"], dependencies=[Depends(require_api_access)])
 _DB_PATH = Path(__file__).resolve().parent.parent / "data" / "crm.db"
 store = CRMStore(str(_DB_PATH))
 
